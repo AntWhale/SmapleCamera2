@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <data>
+
+    </data>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        tools:context=".fragment.CameraFragment">
+
+        <!--<SurfaceView
+            android:id="@+id/viewFinder"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />-->
+
+        <com.antwhale.sample.camera2.view.AutoFitSurfaceView
+            android:id="@+id/viewFinder"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <ImageButton
+            android:id="@+id/captureButton"
+            android:layout_width="96dp"
+            android:layout_height="96dp"
+            android:scaleType="fitCenter"
+            android:background="@drawable/ic_shutter"
+            android:layout_gravity="bottom|center"
+            android:layout_margin="16dp"
+            />
+
+    </FrameLayout>
+</layout>

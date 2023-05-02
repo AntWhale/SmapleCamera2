@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/mainFragment">
+
+    <fragment
+        android:id="@+id/mainFragment"
+        android:name="com.antwhale.sample.camera2.fragment.MainFragment"
+        android:label="MainFragment" >
+        <action
+            android:id="@+id/action_mainFragment_to_cameraFragment"
+            app:destination="@id/cameraFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/cameraFragment"
+        android:name="com.antwhale.sample.camera2.fragment.CameraFragment"
+        android:label="CameraFragment" >
+        <action
+            android:id="@+id/action_cameraFragment_to_imageViewFragment"
+            app:launchSingleTop="true"
+            app:destination="@id/imageViewFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/imageViewFragment"
+        android:name="com.antwhale.sample.camera2.fragment.ImageViewFragment"
+        android:label="ImageViewFragment" >
+
+        <argument
+            android:name="file_path"
+            app:argType="string"
+            app:nullable="false"
+            />
+
+        <argument
+            android:name="orientation"
+            app:argType="integer"
+            android:defaultValue="0"
+            />
+
+    </fragment>
+</navigation>
