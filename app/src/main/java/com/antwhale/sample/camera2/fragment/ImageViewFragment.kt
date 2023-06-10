@@ -84,15 +84,6 @@ class ImageViewFragment : Fragment() {
             }
         }
 
-//        binding.imageView.setImageBitmap(decodeBitmap(imgByteArray))
-
-
-
-        /*if(imgFile.exists()){
-            Log.d("", "img file exists")
-            val bitmap = BitmapFactory.decodeFile(imgFile.absolutePath)
-            binding.imageView.setImageBitmap(bitmap)
-        }*/
     }
 
     private fun loadInputBuffer(inputFile: File): ByteArray {
@@ -109,8 +100,6 @@ class ImageViewFragment : Fragment() {
         val bitmap = BitmapFactory.decodeByteArray(buffer, 0, buffer.size, bitmapOptions)
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, bitmapTransformation, true)
     }
-
-
 
 
     companion object {

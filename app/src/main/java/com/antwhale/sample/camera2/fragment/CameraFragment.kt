@@ -142,8 +142,6 @@ class CameraFragment : Fragment() {
                     }
 
 
-
-
                     it.post{ it.isEnabled = true }
                 }
             }
