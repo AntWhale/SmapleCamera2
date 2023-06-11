@@ -21,6 +21,12 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
+        <TextureView
+            android:id="@+id/textureView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            />
+
         <ImageButton
             android:id="@+id/captureButton"
             android:layout_width="96dp"

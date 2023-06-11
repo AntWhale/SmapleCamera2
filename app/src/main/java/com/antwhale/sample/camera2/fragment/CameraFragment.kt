@@ -2,9 +2,8 @@ package com.antwhale.sample.camera2.fragment
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.ImageFormat
+import android.graphics.*
 import android.hardware.camera2.*
-import androidx.exifinterface.media.ExifInterface
 import android.media.Image
 import android.media.ImageReader
 import android.os.Build
@@ -12,7 +11,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.util.Size
 import android.view.*
+import androidx.exifinterface.media.ExifInterface
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
@@ -25,6 +26,7 @@ import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ArrayBlockingQueue
@@ -32,13 +34,15 @@ import java.util.concurrent.TimeoutException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
+import kotlin.math.max
+
 
 class CameraFragment : Fragment() {
     private val TAG = CameraFragment::class.java.simpleName
     private lateinit var binding: FragmentCameraBinding
 
     private lateinit var camera: CameraDevice
-    private val IMAGE_BUFFER_SIZE = 3
+    private val IMAGE_BUFFER_SIZE = 60
     private val IMAGE_CAPTURE_TIMEOUT_MILLIS = 5000L
 
     private val cameraThread = HandlerThread("CameraThread").apply { start() }
@@ -46,6 +50,11 @@ class CameraFragment : Fragment() {
 
     private val imageReaderThread = HandlerThread("imageReaderThread").apply { start() }
     private val imageReaderHandler = Handler(imageReaderThread.looper)
+
+    private val previewReaderThread = HandlerThread("previewReaderThread").apply { start() }
+    private val previewReaderHandler = Handler(previewReaderThread.looper)
+
+    val imageQueue = ArrayBlockingQueue<Image>(IMAGE_BUFFER_SIZE)
 
     private val cameraManager: CameraManager by lazy {
         val context = requireContext().applicationContext
@@ -56,10 +65,10 @@ class CameraFragment : Fragment() {
         val cameraIdList = cameraManager.cameraIdList
         var myCameraId = ""
 
-        for(id in cameraIdList) {
+        for (id in cameraIdList) {
             val characteristics = cameraManager.getCameraCharacteristics(id)
             val cameraLensFacing = characteristics.get(CameraCharacteristics.LENS_FACING)
-            if(cameraLensFacing == CameraCharacteristics.LENS_FACING_BACK) {
+            if (cameraLensFacing == CameraCharacteristics.LENS_FACING_BACK) {
                 myCameraId = id
             }
         }
@@ -72,6 +81,7 @@ class CameraFragment : Fragment() {
     }
 
     private lateinit var imageReader: ImageReader
+    private lateinit var previewReader: ImageReader
     private lateinit var session: CameraCaptureSession
     private lateinit var relativeOrientation: OrientationLiveData
 
@@ -89,17 +99,20 @@ class CameraFragment : Fragment() {
 
         binding.viewFinder.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(p0: SurfaceHolder) {
+                Log.d(TAG, "surfaceCreated")
+
                 val previewSize = getPreviewOutputSize(
                     binding.viewFinder.display,
                     characteristics,
                     SurfaceHolder::class.java
                 )
 
-                Log.d(TAG, "View finder size: ${binding.viewFinder.width} x ${binding.viewFinder.height}")
+                Log.d(TAG,
+                    "View finder size: ${binding.viewFinder.width} x ${binding.viewFinder.height}")
                 Log.d(TAG, "Selected preview size: $previewSize")
                 binding.viewFinder.setAspectRatio(previewSize.width, previewSize.height)
 
-                view.post{ initializeCamera() }
+                view.post { initializeCamera(previewSize) }
             }
 
             override fun surfaceChanged(p0: SurfaceHolder, p1: Int, p2: Int, p3: Int) {
@@ -128,46 +141,125 @@ class CameraFragment : Fragment() {
                     val output = saveResult(result)
                     Log.d(TAG, "Image saved: ${output.absolutePath}")
 
-                    if(output.extension == "jpg") {
+                    if (output.extension == "jpg") {
                         val exif = androidx.exifinterface.media.ExifInterface(output.absolutePath)
-                        exif.setAttribute(ExifInterface.TAG_ORIENTATION, result.orientation.toString())
+                        exif.setAttribute(ExifInterface.TAG_ORIENTATION,
+                            result.orientation.toString())
                         exif.saveAttributes()
                         Log.d(TAG, "EXIF metadata saved: ${output.absolutePath}")
                     }
 
                     lifecycleScope.launch(Dispatchers.Main) {
                         val path = output.absolutePath
-                        val action = CameraFragmentDirections.actionCameraFragmentToImageViewFragment(path)
+                        val action =
+                            CameraFragmentDirections.actionCameraFragmentToImageViewFragment(path)
                         findNavController().navigate(action)
                     }
 
-
-                    it.post{ it.isEnabled = true }
+                    it.post { it.isEnabled = true }
                 }
             }
         }
     }
 
-    private fun initializeCamera() = lifecycleScope.launch(Dispatchers.Main) {
+    private fun initializeCamera(previewImgSize: Size) = lifecycleScope.launch(Dispatchers.Main) {
         Log.d(TAG, "initializeCamera")
         camera = openCamera()
 
         val size = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
             .getOutputSizes(ImageFormat.JPEG).maxByOrNull { it.height * it.width }!!
 
+        val previewSize = Size(binding.viewFinder.width, binding.viewFinder.height)
+        Log.d(TAG, "AutoFitSurfaceView size : ${previewSize.width} x ${previewSize.height}")
+
         imageReader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, IMAGE_BUFFER_SIZE)
-        val targets = listOf(binding.viewFinder.holder.surface, imageReader.surface)
+
+        previewReader =
+            ImageReader.newInstance(previewImgSize.width,
+                previewImgSize.height,
+                ImageFormat.YUV_420_888,
+                2)
+
+        previewReader.setOnImageAvailableListener({ reader ->
+            /* val image = reader.acquireNextImage()
+             Log.d(TAG, "Image available in queue: ${image.timestamp}")
+             imageQueue.add(image)*/
+
+            Log.d(TAG, "setOnImageAvailableListener")
+            val image: Image = previewReader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            Log.d(TAG, "Image available in queue: ${image.timestamp}")
+
+////            imageQueue.add(image)
+
+//            val plane = image.planes[0]
+//            val buffer: ByteBuffer = plane.buffer
+//            val bytes = ByteArray(buffer.capacity())
+//            buffer.get(bytes)
+//            val previewImg = BitmapFactory.decodeByteArray(bytes, 0, buffer.capacity())
+//            Log.d(TAG, "previewImg size: ${previewImg.width} x ${previewImg.height}")
+//
+//            val scaleRatio: Float = max((previewSize.width.toFloat() / previewImg.height.toFloat()) , (previewSize.height.toFloat() / previewImg.width.toFloat()))
+//
+//            //90도 회전시키고 확대
+//            val matrix = Matrix()
+//            matrix.postRotate(90f)
+//            matrix.postScale(scaleRatio, scaleRatio)
+//
+//            val rotatedBitmap = Bitmap.createBitmap(previewImg,
+//                0,
+//                0,
+//                previewImg.width,
+//                previewImg.height,
+//                matrix,
+//                true)
+//
+//
+//            val targetWidth = rotatedBitmap.width
+//            val targetHeight = rotatedBitmap.height
+//
+//            val widthDeviation = targetWidth - previewImg.height
+//            val heightDeviation = targetHeight - previewImg.width
+//
+//            Log.d(TAG, "scaleRatio: $scaleRatio, targetWidth: $targetWidth, targetHeight: $targetHeight, widthDeviation: $widthDeviation, heightDeviation: $heightDeviation")
+
+            image.close()
+//            if (rotatedBitmap != null) {
+//                // This gets the canvas for the same mTextureView we would have connected to the
+//                // Camera2 preview directly above.
+//                val canvas: Canvas = binding.textureView.lockCanvas() ?: return@setOnImageAvailableListener
+//
+//                val colorTransform = floatArrayOf(0f, 0f, 0f, 0f, 0f,
+//                    .35f, .45f, .25f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 1f, 0f)
+//                val colorMatrix = ColorMatrix()
+//                colorMatrix.set(colorTransform) //Apply the monochrome green
+//                val colorFilter = ColorMatrixColorFilter(colorMatrix)
+//                val paint = Paint()
+//                paint.colorFilter = colorFilter
+//
+//                canvas.drawBitmap(rotatedBitmap, 0f, 0f, paint)
+//
+//                binding.textureView.unlockCanvasAndPost(canvas)
+//            }
+
+        }, previewReaderHandler)
+
+
+        val targets =
+            listOf(binding.viewFinder.holder.surface, imageReader.surface, previewReader.surface)
 
         session = createCaptureSession(camera, targets, cameraHandler)
 
         val captureRequest = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            .apply { addTarget(binding.viewFinder.holder.surface) }
+            .apply {
+                addTarget(binding.viewFinder.holder.surface)
+                addTarget(previewReader.surface)
+            }
 
         session.setRepeatingRequest(captureRequest.build(), null, cameraHandler)
     }
 
     @SuppressLint("MissingPermission")
-    private suspend fun openCamera() : CameraDevice = suspendCancellableCoroutine { cont ->
+    private suspend fun openCamera(): CameraDevice = suspendCancellableCoroutine { cont ->
         cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(device: CameraDevice) {
                 Log.d(TAG, "onOpened")
@@ -190,7 +282,7 @@ class CameraFragment : Fragment() {
                 }
                 val exc = RuntimeException("Camera $cameraId error: ($error) $msg")
                 Log.e(TAG, exc.message, exc)
-                if(cont.isActive) cont.resumeWithException(exc)
+                if (cont.isActive) cont.resumeWithException(exc)
             }
         }, cameraHandler)
     }
@@ -198,7 +290,7 @@ class CameraFragment : Fragment() {
     private suspend fun createCaptureSession(
         device: CameraDevice,
         targets: List<Surface>,
-        handler:Handler? = null
+        handler: Handler? = null,
     ): CameraCaptureSession = suspendCoroutine { cont ->
         Log.d(TAG, "createCameraPreviewSession: ")
 
@@ -219,8 +311,10 @@ class CameraFragment : Fragment() {
     private suspend fun takePhoto():
             CombinedCaptureResult = suspendCoroutine { cont ->
         @Suppress("ControlFlowWithEmptyBody")
-        while (imageReader.acquireNextImage() != null){}
+        while (imageReader.acquireNextImage() != null) {
+        }
 
+        // Start a new image queue
         val imageQueue = ArrayBlockingQueue<Image>(IMAGE_BUFFER_SIZE)
         imageReader.setOnImageAvailableListener({ reader ->
             val image = reader.acquireNextImage()
@@ -228,8 +322,10 @@ class CameraFragment : Fragment() {
             imageQueue.add(image)
         }, imageReaderHandler)
 
-        val captureRequest = session.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-            .apply { addTarget(imageReader.surface) }
+        val captureRequest =
+            session.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+                .apply { addTarget(imageReader.surface) }
+
         session.capture(captureRequest.build(), object : CameraCaptureSession.CaptureCallback() {
             //here
             override fun onCaptureStarted(
@@ -258,26 +354,28 @@ class CameraFragment : Fragment() {
 
                 @Suppress("BlockingMethodInNonBlockingContext")
                 lifecycleScope.launch(cont.context) {
-                    while(true) {
+                    while (true) {
                         //Dequeue images while timestamps don't match
                         val image = imageQueue.take()
 
-                        if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                                image.format != ImageFormat.DEPTH_JPEG &&
-                                image.timestamp != resultTimestamp) continue
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                            image.format != ImageFormat.DEPTH_JPEG &&
+                            image.timestamp != resultTimestamp
+                        ) continue
                         Log.d(TAG, "Matching image dequeued: ${image.timestamp}")
 
                         //Unset the image reader listener
                         imageReaderHandler.removeCallbacks(timeoutRunnable)
                         imageReader.setOnImageAvailableListener(null, null)
 
-                        while(imageQueue.size > 0) {
+                        while (imageQueue.size > 0) {
                             imageQueue.take().close()
                         }
 
                         //Compute EXIF orientation metadata
                         val rotation = relativeOrientation.value ?: 0
-                        val mirrored = characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+                        val mirrored =
+                            characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
                         val exifOrientation = computeExifOrientation(rotation, mirrored)
 
                         cont.resume(CombinedCaptureResult(
@@ -288,13 +386,11 @@ class CameraFragment : Fragment() {
                     }
                 }
             }
-
-
         }, cameraHandler)
     }
 
     private suspend fun saveResult(result: CombinedCaptureResult): File = suspendCoroutine { cont ->
-        when(result.foramt) {
+        when (result.foramt) {
             ImageFormat.JPEG, ImageFormat.DEPTH_JPEG -> {
                 val buffer = result.image.planes[0].buffer
                 val bytes = ByteArray(buffer.remaining()).apply { buffer.get(this) }
@@ -336,6 +432,9 @@ class CameraFragment : Fragment() {
         super.onDestroy()
         cameraThread.quitSafely()
         imageReaderThread.quitSafely()
+        previewReaderThread.quitSafely()
+
+        imageReader.setOnImageAvailableListener(null, null)
     }
 
     companion object {
@@ -347,8 +446,8 @@ class CameraFragment : Fragment() {
             val image: Image,
             val metadata: CaptureResult,
             val orientation: Int,
-            val foramt: Int
-            ): Closeable {
+            val foramt: Int,
+        ) : Closeable {
             override fun close() = image.close()
         }
 
@@ -359,4 +458,4 @@ class CameraFragment : Fragment() {
     }
 
 
- }
+}
